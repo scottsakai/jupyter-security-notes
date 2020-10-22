@@ -21,3 +21,29 @@ There are several scripts here to help get this set up.
 * [`createscope.py`](createscope.py)
 * [`gettoken.py`](gettoken.py)
 * [`minicatokencheck.py`](minicatokencheck.py)
+
+## Quick How-To
+
+Go to the [Globus Developers page](https://developers.globus.org) and follow the steps in the Globus Developer Guide for [application registration](https://docs.globus.org/api/auth/developer-guide/#register-app). Do not select Native App, and for the redirect URL you can put in something like `http://localhost:5000`. There's no need for a redirect URL for this application since it won't be used for authentication via OIDC. When you're done registering your application, you should have a client ID and a client secret.
+
+If you want to verify an FQDN for your client or resource server, you'll need to add a NDS TXT record for a host you manage.
+
+Update the [`createscope.py`](createscope.py) and [`minicatokencheck.py`](minicatokencheck.py) scripts with the client ID and secret, the optional FQDN, and name, description, and short name for the scope. Run [`createscope.py`](createscope.py) and cross your fingers. At the end you should see the information about your client. You can remove the FQDN and scope settings and re-run the script at any time to get the client info.
+
+Try [`gettoken.py`](gettoken.py) script to get an access for your new scope. If you specified the FQDN, your scope will be `https://auth.globus.org/scopes/<fqdn>/<scope short name>`. Otherwise, it will be `https://auth.globus.org/scopes/<CLIENT_ID>/<scope short name>`. 
+
+Here's an example
+```
+$ ./gettoken.py https://auth.globus.org/scopes/batchtest2.jupyter-security.info/minica
+<opaque token string>
+```
+
+Once you have an access token, you can pass it to the [`minicatokencheck.py`](minicatokencheck.py) script to see if it's valid and if the user has an identity from a domain you trust. The token checking code is what you'll put on your resource server to make decisions about authorizing users based on the tokens received.
+
+```
+$ ./minicatokencheck.py <good opaque token string>
+rpwagner
+$ ./minicatokencheck.py <bad opaque token string>
+$ echo $?
+1
+```
