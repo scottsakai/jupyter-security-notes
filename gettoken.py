@@ -16,7 +16,7 @@ REFRESH_TOKENS = False
 
 # Set this to True if you're running this on a remote
 # system via SSH. The login URL will be shown, 
-HEADLESS = True
+HEADLESS = False
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
