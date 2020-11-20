@@ -14,6 +14,10 @@ CLIENT_ID = 'd719c82f-3a11-4de1-9d87-d52d28ec31b6'
 # mechanism to retrieve access on your system
 REFRESH_TOKENS = False
 
+# Set this to True if you're running this on a remote
+# system via SSH. The login URL will be shown, 
+HEADLESS = True
+
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         print('Usage: ./gettoken.py <scope>')
@@ -26,8 +30,15 @@ if __name__ == '__main__':
     try:
         tokens = cli.load_tokens_by_scope(requested_scopes=[scope,])
     except:
+        no_local_server=False
+        no_browser=False
+        if HEADLESS:
+            no_local_server=True
+            no_browser=True
         cli.login(requested_scopes=[scope,],
-                      refresh_tokens=REFRESH_TOKENS)
+                      refresh_tokens=REFRESH_TOKENS,
+                      no_local_server=no_local_server,
+                      no_browser=no_browser)
         tokens = cli.load_tokens_by_scope(requested_scopes=[scope,])
 
     print(tokens[scope]['access_token'])
