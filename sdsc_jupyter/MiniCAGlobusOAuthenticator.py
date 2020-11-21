@@ -17,5 +17,5 @@ class MiniCAGlobusOAuthenticator(LocalGlobusOAuthenticator):
     async def authenticate(self, handler, data=None):
         if not self.mini_ca_scope in self.scope:
             self.scope.append(self.mini_ca_scope)
-        user_info = LocalGlobusOAuthenticator.authenticate(handler, data=data)
+        user_info = await super().authenticate(handler, data=data)
         return user_info
