@@ -37,7 +37,7 @@ class MiniCAGlobusOAuthenticator(LocalGlobusOAuthenticator):
         for resource_server in old_tokens.keys():
             if old_tokens[resource_server]['scope'] == self.mini_ca_scope:
                 mini_ca_token = old_tokens[resource_server]['access_token']
-            else
+            else:
                 new_tokens[resource_server] = old_tokens[resource_server]
         user_info['auth_state']['tokens'] = new_tokens
 
