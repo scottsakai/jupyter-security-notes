@@ -1,0 +1,115 @@
+#!/bin/bash
+# doCA.sh - entrypoint for the ssh CA
+# this should be invoked via sudo and run as something that doesn't need to
+# be root.
+
+umask 0077
+set -u
+
+
+SCRIPTDIR=$(cd $(dirname $0) && pwd)
+if [[ "${SCRIPTDIR+1}" == '' || -z "${SCRIPTDIR}" ]]; then
+  echo "Unable to find the location of this script." 1>&2
+  exit 1
+fi
+
+## SET THESE
+## A plugin-type architecture would be convenient, but
+## complex to implement, and may introduce opportunities for
+## unwanted behavior.
+##
+## Simply define a single program for each task
+
+# This command verifies a token and maps it to a local username.
+#   MUST expect a token on STDIN (not args!)
+#   MUST verify the token and map it to a local username, printed on STDOUT with a newline.
+#   MUST ONLY generate at most one line on STDOUT and
+#   MUST NOT produce any output on STDOUT unless the token is verified to be valid.
+#   SHOULD be invoked using sudo (to a non-root user and not the same as the one below)
+#     so any surprises from the validate/map process don't run in the context of this caller.
+#TOKEN_TO_LOCALNAME_CMD="sudo -u sshtokencheck ${SCRIPTDIR}/globus-token-to-xsede-sameuser"
+TOKEN_TO_LOCALNAME_CMD="sudo -u sshtokencheck ${SCRIPTDIR}/dummy-tokencheck"
+
+
+# This command signs the public key using the CA signing key.
+#   MUST expect the cert's principal (local user) as first line on STDIN (not args!)
+#   MUST expect the pubkey as 2nd line on STDIN
+#   MUST verify that the pubkey is a pubkey.
+#   MUST NOT sign for root.
+#   MUST NOT produce produce any output on STDOUT except for a signed ssh certificate.
+#   SHOULD be invoked using sudo (to a non-root user) so that the calling
+#     UID doesn't have access to the signing key.
+CA_SIGN_CMD="sudo -u sshca ${SCRIPTDIR}/ssh-ca"
+
+
+# simple check for sudo
+#if [[ "${SUDO_USER+1}" == '' || -z "${SUDO_USER}" ]]; then
+#  echo "SUDO_USER not set, run this script using sudo (need not be root)" 1>&2
+#  exit 1
+#fi
+
+# we want to clean up the work directory always
+function cleanup
+{
+  if [[ "${WORKDIR+1}" != "" && "${WORKDIR}" =~ ^/tmp/ ]]; then
+    rm -rf "${WORKDIR}"
+  fi
+}
+
+# Writing to stderr only is useless since the remote will
+# likely throw it away.
+# Writing to something else only is useless since the remote
+# may want to see it.
+function oops
+{
+  echo "$@" 1>&2
+  echo "$@" | logger --id doCA -i
+  exit 1
+}
+
+
+WORKDIR=$(mktemp -d /tmp/doCA-workdir.XXXXXXXXXX)
+if [[ -z "${WORKDIR}" || ! "${WORKDIR}" =~ ^/tmp/ ]]; then
+  echo "Failed to create temp dir WORKDIR. Got ${WORKDIR}." 1>&2
+  exit 1
+fi
+
+# from this point on, we have stuff to clean up...
+trap cleanup EXIT
+
+
+# get the TOKEN (first line)
+IFS=$'\n' read -r -s -n 65535 -t 10 TOKEN 
+if [[ $? -ne 0 ]]; then
+  oops "Did not get TOKEN (timeout on input?)"
+fi
+if [[ -z "${TOKEN}" ]]; then
+  oops "No TOKEN provided"
+fi
+
+# get the PUBKEY (second line)
+IFS=$'\n' read -r -s -n 65535 -t 10 PUBKEY
+if [[ $? -ne 0 ]]; then
+  oops "Did not get PUBKEY (timeout on input?)"
+fi
+if [[ -z "${PUBKEY}" ]]; then
+  oops "No PUBKEY provided"
+fi
+
+
+# Let's check the token first.
+LOCALNAME=$( echo -E "${TOKEN}" | ${TOKEN_TO_LOCALNAME_CMD} )
+if [[ $? -ne 0 || "${LOCALNAME+1}" == '' || -z "${LOCALNAME}" ]]; then
+  oops "Failed to verify or map token"
+fi
+
+# Now sign.
+# Note: this process MUST NOT run as the current user, nor
+# the one running the token check.
+printf -- "%s\n%s\n" "${LOCALNAME}" "${PUBKEY}" | ${CA_SIGN_CMD}
+if [[ $? -ne 0 ]]; then
+  oops "Failed to sign pubkey or rejected."
+fi
+
+# done.
+exit

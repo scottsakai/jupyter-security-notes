@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# This script is the SSH CA, it should be run as a dedicated
+# user, which has exclusive access to SIGNING_KEY.
+
+# The signing name comes in on the first line, pubkey on the second.
+# Don't use args since it's easy to mess those up and do something dangerous.
+
+umask 0077
+set -u
+
+
+# This is the ssh key used to sign certs
+# It should only be readable by the aforementioned dedicated user.
+SIGNING_KEY="/var/secrets/ssh-ca-key"
+
+
+# This ID shows up as the CA identity on the host accepting the cert.
+SIGNING_IDENTITY="SSH CA on shaka.sdsc.edu"
+
+
+# Duration for the cert to be valid.
+# Keep this short, since we don't do KRLs. ITGF allows SLCS CAs to
+# sign for 1e6 seconds without a CRL, so let's use that as an upper
+# bound.
+VALIDITY_PERIOD="+1000s"
+
+
+
+# we want to clean up the work directory always
+function cleanup
+{
+  if [[ "${WORKDIR+1}" != "" && "${WORKDIR}" =~ ^/tmp/ ]]; then
+    rm -rf "${WORKDIR}"
+  fi
+}
+
+# Writing to stderr only is useless since the remote will
+# likely throw it away.
+# Writing to something else only is useless since the remote
+# may want to see it.
+function oops
+{
+  echo "$@" 1>&2
+  echo "$@" | logger --id ssh-ca -i
+  exit 1
+}
+
+
+WORKDIR=$(mktemp -d /tmp/ssh-ca-workdir.XXXXXXXXXX)
+if [[ -z "${WORKDIR}" || ! "${WORKDIR}" =~ ^/tmp/ ]]; then
+  echo "Failed to create temp dir WORKDIR. Got ${WORKDIR}." 1>&2
+  exit 1
+fi
+
+# from this point on, we have stuff to clean up...
+trap cleanup EXIT
+
+
+# get the local name (first line)
+IFS=$'\n' read -r -s -n 65535 -t 10 LOCALNAME
+if [[ $? -ne 0 ]]; then
+  oops "Did not get LOCALNAME (timeout on input?)"
+fi
+if [[ -z "${LOCALNAME}" ]]; then
+  oops "No LOCALNAME provided"
+fi
+
+# get the PUBKEY (second line)
+IFS=$'\n' read -r -s -n 65535 -t 10 PUBKEY
+if [[ $? -ne 0 ]]; then
+  oops "Did not get PUBKEY (timeout on input?)"
+fi
+if [[ -z "${PUBKEY}" ]]; then
+  oops "No PUBKEY provided"
+fi
+
+
+# check the pubkey to make sure it's sane
+echo -E "${PUBKEY}" >> "${WORKDIR}/userkey.pub"
+PUBKEY_FP=$(ssh-keygen -l -f "${WORKDIR}/userkey.pub")
+if [[ $? -ne 0 || -z "${PUBKEY_FP}" ]]; then
+  oops "Unable to generate fingerprint for pubkey... is it really an ssh pubkey?"
+fi
+
+# check the local name for basic sanity
+if [[ "${LOCALNAME}" =~ [^-_a-z0-9] ]]; then
+  oops "LOCALNAME contains junk characters"
+elif [[ "${LOCALNAME}" == 'root' ]]; then
+  oops "LOCALNAME is root"
+fi
+
+# do the signing
+ssh-keygen -s "${SIGNING_KEY}" \
+  -I "${SIGNING_IDENTITY}" \
+  -n "${LOCALNAME}" \
+  -V "${VALIDITY_PERIOD}" \
+  "${WORKDIR}/userkey.pub" 2>"${WORKDIR}/stderr"
+
+if [[ $? -ne 0 ]]; then
+  cat "${WORKDIR}/stderr" | logger --id ssh-ca -i
+  oops "Failed to sign ssh key ${PUBKEY_FP} for user ${LOCALNAME}"
+fi
+
+# done!
+echo -E "Successfully signed ssh key ${PUBKEY_FP} for user ${LOCALNAME}" | logger --id ssh-ca -i
+cat "${WORKDIR}/userkey-cert.pub"
+exit 0
+
+
+
+
+

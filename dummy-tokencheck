@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# A dummy token-checker script.
+# Expects the string "test-token" on stdin, maps to user "no-user"
+# prints "no-user" on stdout.
+
+umask 0022
+set -u
+
+# get the TOKEN (first line)
+IFS=$'\n' read -r -s -n 65535 -t 10 TOKEN 
+if [[ $? -ne 0 || -z "${TOKEN}" ]]; then
+  exit 1
+fi
+
+
+if [[ "${TOKEN}" != "test-token" ]]; then
+  exit 1
+fi
+
+echo "no-user"
+exit 0
+
+
