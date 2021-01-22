@@ -15,6 +15,7 @@ fi
 
 
 if [[ "${TOKEN}" != "test-token" ]]; then
+  echo "not a test-token" 1>&2
   exit 1
 fi
 

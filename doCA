@@ -1,12 +1,13 @@
 #!/bin/bash
 # doCA.sh - entrypoint for the ssh CA
-# this should be invoked via sudo and run as something that doesn't need to
-# be root.
+#
+# This should be invoked by a user that can't modify these scripts.
+# Don't be root.
 
 umask 0077
 set -u
 
-
+# guess at the directory containing this script
 SCRIPTDIR=$(cd $(dirname $0) && pwd)
 if [[ "${SCRIPTDIR+1}" == '' || -z "${SCRIPTDIR}" ]]; then
   echo "Unable to find the location of this script." 1>&2
@@ -31,22 +32,19 @@ fi
 TOKEN_TO_LOCALNAME_CMD="sudo -u sshtokencheck ${SCRIPTDIR}/dummy-tokencheck"
 
 
-# This command signs the public key using the CA signing key.
+# This command:
+#   1) generates an ssh ed25519 keypair
+#   2) signs the public key using the CA signing key
+#   3) returns the private key block, ssh-cert on last line
+#
 #   MUST expect the cert's principal (local user) as first line on STDIN (not args!)
-#   MUST expect the pubkey as 2nd line on STDIN
-#   MUST verify that the pubkey is a pubkey.
 #   MUST NOT sign for root.
-#   MUST NOT produce produce any output on STDOUT except for a signed ssh certificate.
+#   MUST NOT produce produce any output on STDOUT except for the aforementioned output.
 #   SHOULD be invoked using sudo (to a non-root user) so that the calling
 #     UID doesn't have access to the signing key.
 CA_SIGN_CMD="sudo -u sshca ${SCRIPTDIR}/ssh-ca"
 
 
-# simple check for sudo
-#if [[ "${SUDO_USER+1}" == '' || -z "${SUDO_USER}" ]]; then
-#  echo "SUDO_USER not set, run this script using sudo (need not be root)" 1>&2
-#  exit 1
-#fi
 
 # we want to clean up the work directory always
 function cleanup
@@ -58,12 +56,21 @@ function cleanup
 
 # Writing to stderr only is useless since the remote will
 # likely throw it away.
+#
 # Writing to something else only is useless since the remote
 # may want to see it.
+#
+# We may have captured stderr from some commands. Log those
+# in case there's trouble later.
 function oops
 {
   echo "$@" 1>&2
-  echo "$@" | logger --id doCA -i
+  echo "doCA to-client: " "$@" | logger --id=$$ 
+  if [[ "${WORKDIR+1}" != '' ]]; then
+    for I in "${WORKDIR}"/*.stderr; do
+      printf "doCA cmd-stderr:%s  " "$I" | cat - "$I" | logger --id=$$
+    done
+  fi
   exit 1
 }
 
@@ -79,6 +86,7 @@ trap cleanup EXIT
 
 
 # get the TOKEN (first line)
+echo "Token: " 1>&2
 IFS=$'\n' read -r -s -n 65535 -t 10 TOKEN 
 if [[ $? -ne 0 ]]; then
   oops "Did not get TOKEN (timeout on input?)"
@@ -87,18 +95,9 @@ if [[ -z "${TOKEN}" ]]; then
   oops "No TOKEN provided"
 fi
 
-# get the PUBKEY (second line)
-IFS=$'\n' read -r -s -n 65535 -t 10 PUBKEY
-if [[ $? -ne 0 ]]; then
-  oops "Did not get PUBKEY (timeout on input?)"
-fi
-if [[ -z "${PUBKEY}" ]]; then
-  oops "No PUBKEY provided"
-fi
-
 
 # Let's check the token first.
-LOCALNAME=$( echo -E "${TOKEN}" | ${TOKEN_TO_LOCALNAME_CMD} )
+LOCALNAME=$( printf -- "%s\n" "${TOKEN}" | ${TOKEN_TO_LOCALNAME_CMD} 2>"${WORKDIR}/token_to_localname.stderr" )
 if [[ $? -ne 0 || "${LOCALNAME+1}" == '' || -z "${LOCALNAME}" ]]; then
   oops "Failed to verify or map token"
 fi
@@ -106,7 +105,7 @@ fi
 # Now sign.
 # Note: this process MUST NOT run as the current user, nor
 # the one running the token check.
-printf -- "%s\n%s\n" "${LOCALNAME}" "${PUBKEY}" | ${CA_SIGN_CMD}
+printf -- "%s\n" "${LOCALNAME}" | ${CA_SIGN_CMD} 2>"${WORKDIR}/ca_sign_cmd.stderr"
 if [[ $? -ne 0 ]]; then
   oops "Failed to sign pubkey or rejected."
 fi

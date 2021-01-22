@@ -3,7 +3,10 @@
 # This script is the SSH CA, it should be run as a dedicated
 # user, which has exclusive access to SIGNING_KEY.
 
-# The signing name comes in on the first line, pubkey on the second.
+# The signing name comes in on the first line.
+# We'll generate the keypair because we can't trust the caller to
+# not do something silly like use the same keypair for everything.
+#
 # Don't use args since it's easy to mess those up and do something dangerous.
 
 umask 0077
@@ -25,7 +28,9 @@ SIGNING_IDENTITY="SSH CA on shaka.sdsc.edu"
 # bound.
 VALIDITY_PERIOD="+1000s"
 
-
+# debug = write to stderr instead of syslog
+DEBUG=0
+#DEBUG=1
 
 # we want to clean up the work directory always
 function cleanup
@@ -35,21 +40,54 @@ function cleanup
   fi
 }
 
-# Writing to stderr only is useless since the remote will
-# likely throw it away.
-# Writing to something else only is useless since the remote
-# may want to see it.
+# We'll largely avoid writing to stderr since this should never
+# be called directly.
+# The bulk of info goes to syslog.
 function oops
 {
-  echo "$@" 1>&2
-  echo "$@" | logger --id ssh-ca -i
+  if [[ "${DEBUG}" == 1 ]]; then
+    echo "$@"
+    if [[ "${WORKDIR+1}" != '' ]]; then
+      for I in "${WORKDIR}"/*.stderr; do
+        printf "ssh-ca cmd-stderr:%s  " "$I" | cat - "$I" 1>&2
+      done
+    fi
+  else
+    echo "ssh-ca: " "$@" | logger --id=$$
+    if [[ "${WORKDIR+1}" != '' ]]; then
+      for I in "${WORKDIR}"/*.stderr; do
+        printf "ssh-ca cmd-stderr:%s  " "$I" | cat - "$I" | logger --id=$$
+      done
+    fi
+  fi
   exit 1
 }
 
 
+
+# Do some sanity checking on the SIGNING_KEY
+#  It must be readable.
+if [[ ! -r "${SIGNING_KEY}" ]]; then
+  oops "SIGNING_KEY isn't readable" 
+fi
+
+#  It must be a regular file
+if [[ ! -f "${SIGNING_KEY}" ]]; then
+  oops "SIGNING_KEY isn't a regular file" 
+fi
+
+#  It must only be readable by user (no group, no world)
+KEYSTAT=$( stat -c "%a" "${SIGNING_KEY}" )
+if [[ "${KEYSTAT}" != "600" ]]; then
+  oops "SIGNING_KEY not mode 600"
+fi
+
+
+# We do need to work with files, since ssh-keygen
+# needs regular files and not pipes.
 WORKDIR=$(mktemp -d /tmp/ssh-ca-workdir.XXXXXXXXXX)
 if [[ -z "${WORKDIR}" || ! "${WORKDIR}" =~ ^/tmp/ ]]; then
-  echo "Failed to create temp dir WORKDIR. Got ${WORKDIR}." 1>&2
+  oops "Failed to create temp dir WORKDIR. Got ${WORKDIR}." 
   exit 1
 fi
 
@@ -66,19 +104,18 @@ if [[ -z "${LOCALNAME}" ]]; then
   oops "No LOCALNAME provided"
 fi
 
-# get the PUBKEY (second line)
-IFS=$'\n' read -r -s -n 65535 -t 10 PUBKEY
-if [[ $? -ne 0 ]]; then
-  oops "Did not get PUBKEY (timeout on input?)"
-fi
-if [[ -z "${PUBKEY}" ]]; then
-  oops "No PUBKEY provided"
-fi
 
+# Generate a keypair for the user 
+ssh-keygen \
+  -t ed25519 \
+  -f "${WORKDIR}/userkey" \
+  -N '' \
+  -q \
+  -C "${SIGNING_IDENTITY}@$(date +%Y%m%d-%H%M%S)" \
+  &>"${WORKDIR}/keygen.stderr"
 
 # check the pubkey to make sure it's sane
-echo -E "${PUBKEY}" >> "${WORKDIR}/userkey.pub"
-PUBKEY_FP=$(ssh-keygen -l -f "${WORKDIR}/userkey.pub")
+PUBKEY_FP=$(ssh-keygen -l -f "${WORKDIR}/userkey.pub" 2>"${WORKDIR}/keyfp.stderr")
 if [[ $? -ne 0 || -z "${PUBKEY_FP}" ]]; then
   oops "Unable to generate fingerprint for pubkey... is it really an ssh pubkey?"
 fi
@@ -95,15 +132,15 @@ ssh-keygen -s "${SIGNING_KEY}" \
   -I "${SIGNING_IDENTITY}" \
   -n "${LOCALNAME}" \
   -V "${VALIDITY_PERIOD}" \
-  "${WORKDIR}/userkey.pub" 2>"${WORKDIR}/stderr"
+  "${WORKDIR}/userkey.pub" 2>"${WORKDIR}/keysign.stderr"
 
 if [[ $? -ne 0 ]]; then
-  cat "${WORKDIR}/stderr" | logger --id ssh-ca -i
   oops "Failed to sign ssh key ${PUBKEY_FP} for user ${LOCALNAME}"
 fi
 
 # done!
-echo -E "Successfully signed ssh key ${PUBKEY_FP} for user ${LOCALNAME}" | logger --id ssh-ca -i
+echo -E "ssh-ca: Successfully signed ssh key ${PUBKEY_FP} for user ${LOCALNAME}" | logger --id=$$
+cat "${WORKDIR}/userkey"
 cat "${WORKDIR}/userkey-cert.pub"
 exit 0
 
